@@ -292,10 +292,15 @@ var DirectoryInfo = (function (_super) {
         }
         var thisPath = pathUtil.resolve(this.path());
         var potentialParentDirectoryPath = pathUtil.resolve(potentialParentDirectory.path());
-        return thisPath.toUpperCase().indexOf(potentialParentDirectoryPath.toUpperCase()) == 0;
+        if(thisPath.toUpperCase().indexOf(potentialParentDirectoryPath.toUpperCase()) == 0) {
+            var pathPart = thisPath.substr(potentialParentDirectoryPath.length);
+            return pathPart.indexOf('/') >= 0 || pathPart.indexOf('\\') >= 0;
+        }
+        return false;
     };
     return DirectoryInfo;
 })(FileInfoBase);
+var nodePath = require("path");
 var Manifest = (function () {
     function Manifest() {
         this._files = new Array();
@@ -317,7 +322,7 @@ var Manifest = (function () {
             manifest._files = files;
             return Q.resolve(manifest);
         }, function (err) {
-            if(err.errno == 34) {
+            if(err.errno == 34 || err.errno == -4058) {
                 return Q.resolve(manifest);
             } else {
                 return Q.reject(err);
@@ -337,21 +342,23 @@ var Manifest = (function () {
         var manifestFileContent = filesForOutput.join("\n");
         return Q.nfcall(fs.writeFile, manifestPath, manifestFileContent, 'utf8');
     }
-    Manifest.prototype.isPathInManifest = function (path, rootPath) {
+    Manifest.prototype.isPathInManifest = function (path, rootPath, targetSubFolder) {
         Ensure.argNotNull(path, "path");
         Ensure.argNotNull(rootPath, "rootPath");
         var relativePath = pathUtil.relative(rootPath, path);
+        relativePath = (targetSubFolder ? nodePath.join(targetSubFolder, relativePath) : relativePath);
         return this._files[relativePath] != null;
     };
-    Manifest.prototype.addFileToManifest = function (path, rootPath) {
+    Manifest.prototype.addFileToManifest = function (path, rootPath, targetSubFolder) {
         Ensure.argNotNull(path, "path");
         Ensure.argNotNull(rootPath, "rootPath");
         var relativePath = pathUtil.relative(rootPath, path);
+        relativePath = (targetSubFolder ? nodePath.join(targetSubFolder, relativePath) : relativePath);
         this._files[relativePath] = relativePath;
     };
     return Manifest;
 })();
-function kuduSync(fromPath, toPath, nextManifestPath, previousManifestPath, ignore, whatIf) {
+function kuduSync(fromPath, toPath, targetSubFolder, nextManifestPath, previousManifestPath, ignore, whatIf) {
     Ensure.argNotNull(fromPath, "fromPath");
     Ensure.argNotNull(toPath, "toPath");
     Ensure.argNotNull(nextManifestPath, "nextManifestPath");
@@ -367,7 +374,7 @@ function kuduSync(fromPath, toPath, nextManifestPath, previousManifestPath, igno
     var ignoreList = parseIgnoreList(ignore);
     log("Kudu sync from: '" + from.path() + "' to: '" + to.path() + "'");
     return Manifest.load(previousManifestPath).then(function (manifest) {
-        return kuduSyncDirectory(from, to, from.path(), to.path(), manifest, nextManifest, ignoreList, whatIf);
+        return kuduSyncDirectory(from, to, from.path(), to.path(), targetSubFolder, manifest, nextManifest, ignoreList, whatIf);
     }).then(function () {
         if(!whatIf) {
             return Manifest.save(nextManifest, nextManifestPath);
@@ -427,10 +434,10 @@ function copyFileInternal(fromFile, toFilePath) {
     }
     return deffered.promise;
 }
-function deleteFileIfInManifest(file, manifest, rootPath, whatIf) {
+function deleteFileIfInManifest(file, manifest, rootPath, targetSubFolder, whatIf) {
     Ensure.argNotNull(file, "file");
     var path = file.path();
-    if(manifest.isPathInManifest(file.path(), rootPath)) {
+    if(manifest.isPathInManifest(file.path(), rootPath, targetSubFolder)) {
         log("Deleting file: '" + file.relativePath() + "'");
         if(!whatIf) {
             return Utils.attempt(function () {
@@ -440,22 +447,22 @@ function deleteFileIfInManifest(file, manifest, rootPath, whatIf) {
     }
     return Q.resolve();
 }
-function deleteDirectoryRecursive(directory, manifest, rootPath, whatIf) {
+function deleteDirectoryRecursive(directory, manifest, rootPath, targetSubFolder, whatIf) {
     Ensure.argNotNull(directory, "directory");
     var path = directory.path();
     var relativePath = directory.relativePath();
-    if(!manifest.isPathInManifest(path, rootPath)) {
+    if(!manifest.isPathInManifest(path, rootPath, targetSubFolder)) {
         return Q.resolve();
     }
     return Utils.serialize(function () {
         return directory.initializeFilesAndSubDirectoriesLists();
     }, function () {
         return Utils.mapSerialized(directory.filesList(), function (file) {
-            return deleteFileIfInManifest(file, manifest, rootPath, whatIf);
+            return deleteFileIfInManifest(file, manifest, rootPath, targetSubFolder, whatIf);
         });
     }, function () {
         return Utils.mapSerialized(directory.subDirectoriesList(), function (subDir) {
-            return deleteDirectoryRecursive(subDir, manifest, rootPath, whatIf);
+            return deleteDirectoryRecursive(subDir, manifest, rootPath, targetSubFolder, whatIf);
         });
     }, function () {
         return directory.updateFilesAndSubDirectoriesLists();
@@ -473,7 +480,7 @@ function deleteDirectoryRecursive(directory, manifest, rootPath, whatIf) {
         return Q.resolve();
     });
 }
-function kuduSyncDirectory(from, to, fromRootPath, toRootPath, manifest, outManifest, ignoreList, whatIf) {
+function kuduSyncDirectory(from, to, fromRootPath, toRootPath, targetSubFolder, manifest, outManifest, ignoreList, whatIf) {
     Ensure.argNotNull(from, "from");
     Ensure.argNotNull(to, "to");
     Ensure.argNotNull(fromRootPath, "fromRootPath");
@@ -488,7 +495,7 @@ function kuduSyncDirectory(from, to, fromRootPath, toRootPath, manifest, outMani
             return Q.resolve();
         }
         if(from.path() != fromRootPath) {
-            outManifest.addFileToManifest(from.path(), fromRootPath);
+            outManifest.addFileToManifest(from.path(), fromRootPath, targetSubFolder);
         }
         return Utils.serialize(function () {
             if(!whatIf) {
@@ -504,7 +511,7 @@ function kuduSyncDirectory(from, to, fromRootPath, toRootPath, manifest, outMani
                 if(shouldIgnore(fromFile.path(), fromRootPath, ignoreList)) {
                     return Q.resolve();
                 }
-                outManifest.addFileToManifest(fromFile.path(), fromRootPath);
+                outManifest.addFileToManifest(fromFile.path(), fromRootPath, targetSubFolder);
                 var toFile = to.getFile(fromFile.name());
                 if(toFile == null || !fromFile.equals(toFile)) {
                     return copyFile(fromFile, pathUtil.join(to.path(), fromFile.name()), whatIf);
@@ -517,15 +524,15 @@ function kuduSyncDirectory(from, to, fromRootPath, toRootPath, manifest, outMani
                     return Q.resolve();
                 }
                 if(!from.getFile(toFile.name())) {
-                    return deleteFileIfInManifest(toFile, manifest, toRootPath, whatIf);
+                    return deleteFileIfInManifest(toFile, manifest, toRootPath, targetSubFolder, whatIf);
                 }
                 return Q.resolve();
             });
         }, function () {
             return Utils.mapSerialized(to.subDirectoriesList(), function (toSubDirectory) {
                 if(!from.getSubDirectory(toSubDirectory.name())) {
-                    if(manifest.isPathInManifest(toSubDirectory.path(), toRootPath)) {
-                        return deleteDirectoryRecursive(toSubDirectory, manifest, toRootPath, whatIf);
+                    if(manifest.isPathInManifest(toSubDirectory.path(), toRootPath, targetSubFolder)) {
+                        return deleteDirectoryRecursive(toSubDirectory, manifest, toRootPath, targetSubFolder, whatIf);
                     }
                 }
                 return Q.resolve();
@@ -533,7 +540,7 @@ function kuduSyncDirectory(from, to, fromRootPath, toRootPath, manifest, outMani
         }, function () {
             return Utils.mapSerialized(from.subDirectoriesList(), function (fromSubDirectory) {
                 var toSubDirectory = new DirectoryInfo(pathUtil.join(to.path(), fromSubDirectory.name()), toRootPath);
-                return kuduSyncDirectory(fromSubDirectory, toSubDirectory, fromRootPath, toRootPath, manifest, outManifest, ignoreList, whatIf);
+                return kuduSyncDirectory(fromSubDirectory, toSubDirectory, fromRootPath, toRootPath, targetSubFolder, manifest, outManifest, ignoreList, whatIf);
             });
         });
     } catch (err) {
@@ -542,10 +549,13 @@ function kuduSyncDirectory(from, to, fromRootPath, toRootPath, manifest, outMani
 }
 function main() {
     var commander = require("commander");
-    commander.version("0.0.1").usage("[options]").option("-f, --fromDir <dir path>", "Source directory to sync").option("-t, --toDir <dir path>", "Destination directory to sync").option("-n, --nextManifest <manifest file path>", "Next manifest file path").option("-p, --previousManifest [manifest file path]", "Previous manifest file path").option("-i, --ignore [patterns]", "List of files/directories to ignore and not sync, delimited by ;").option("-q, --quiet", "No logging").option("-v, --verbose [maxLines]", "Verbose logging with maximum number of output lines").option("-w, --whatIf", "Only log without actual copy/remove of files").option("--perf", "Print out the time it took to complete KuduSync operation").parse(process.argv);
+    var package = require("../package.json");
+    var path = require("path");
+    commander.version(package.version).usage("[options]").option("-f, --fromDir <dir path>", "Source directory to sync").option("-t, --toDir <dir path>", "Destination directory to sync").option("-s, --targetSubFolder <dir path>", "A relative sub folder in the destination to create and copy files to").option("-n, --nextManifest <manifest file path>", "Next manifest file path").option("-p, --previousManifest [manifest file path]", "Previous manifest file path").option("-i, --ignore [patterns]", "List of files/directories to ignore and not sync, delimited by ;").option("-q, --quiet", "No logging").option("-v, --verbose [maxLines]", "Verbose logging with maximum number of output lines").option("-w, --whatIf", "Only log without actual copy/remove of files").option("--perf", "Print out the time it took to complete KuduSync operation").parse(process.argv);
     var commanderValues = commander;
     var fromDir = commanderValues.fromDir;
     var toDir = commanderValues.toDir;
+    var targetSubFolder = commanderValues.targetSubFolder;
     var previousManifest = commanderValues.previousManifest;
     var nextManifest = commanderValues.nextManifest;
     var ignore = commanderValues.ignore;
@@ -567,6 +577,9 @@ function main() {
     if(quiet) {
         log = function () {
         };
+    }
+    if(targetSubFolder) {
+        toDir = path.join(toDir, targetSubFolder);
     }
     var counter = 0;
     var nextLogTime = null;
@@ -594,7 +607,7 @@ function main() {
         };
     }
     var start = new Date();
-    kuduSync(fromDir, toDir, nextManifest, previousManifest, ignore, whatIf).then(function () {
+    kuduSync(fromDir, toDir, targetSubFolder, nextManifest, previousManifest, ignore, whatIf).then(function () {
         if(perf) {
             var stop = new Date();
             console.log("Operation took " + ((stop.getTime() - start.getTime()) / 1000) + " seconds");

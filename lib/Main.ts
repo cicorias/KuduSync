@@ -1,14 +1,17 @@
-///<reference path='fileUtils.ts'/>
+///<reference path='FileUtils.ts'/>
 ///<reference path='../typings/commander.d.ts'/>
 
 function main() {
     var commander: Commander = require("commander");
+    var package = require("../package.json");
+    var path = require("path");
 
     commander
-        .version("0.0.1")
+        .version(package.version)
         .usage("[options]")
         .option("-f, --fromDir <dir path>", "Source directory to sync")
         .option("-t, --toDir <dir path>", "Destination directory to sync")
+        .option("-s, --targetSubFolder <dir path>", "A relative sub folder in the destination to create and copy files to")
         .option("-n, --nextManifest <manifest file path>", "Next manifest file path")
         .option("-p, --previousManifest [manifest file path]", "Previous manifest file path")
         .option("-i, --ignore [patterns]", "List of files/directories to ignore and not sync, delimited by ;")
@@ -21,6 +24,7 @@ function main() {
     var commanderValues: any = commander;
     var fromDir = commanderValues.fromDir;
     var toDir = commanderValues.toDir;
+    var targetSubFolder = commanderValues.targetSubFolder;
     var previousManifest = commanderValues.previousManifest;
     var nextManifest = commanderValues.nextManifest;
     var ignore = commanderValues.ignore;
@@ -51,6 +55,10 @@ function main() {
     if (quiet) {
         // Change log to be no op
         log = () => { };
+    }
+
+    if (targetSubFolder) {
+        toDir = path.join(toDir, targetSubFolder);
     }
 
     var counter = 0;
@@ -86,6 +94,7 @@ function main() {
     kuduSync(
         fromDir,
         toDir,
+        targetSubFolder,
         nextManifest,
         previousManifest,
         ignore,
@@ -109,3 +118,4 @@ function main() {
 }
 
 exports.main = main;
+

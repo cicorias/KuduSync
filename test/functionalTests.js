@@ -405,7 +405,8 @@ function runKuduSync(prevManifestFile, nextManifestFile, ignore, whatIf, callbac
 function generateFromFiles(files) {
     for (var index in files) {
         var file = files[index];
-        file = file.toUpperCase(); // to find casing bugs
+        // to find casing issues on windows
+        file = /^win/.test(process.platform) ? file.toUpperCase() : file;
         generateFromFile(file);
     }
 }
@@ -493,7 +494,7 @@ function tryGetFileStat(path) {
         return fs.statSync(path);
     }
     catch (e) {
-        if (e.errno == 34) {
+        if (e.errno == 34 || e.errno == -4058) { 
             // Return null if path doesn't exist
             return null;
         }
